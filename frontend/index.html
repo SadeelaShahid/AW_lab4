@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Order Tracking & Live Support</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #171a23; --border: #2a2e3a; --text: #e8e9ed;
+    --muted: #9198a8; --accent: #6c8cff; --ok: #3ecf8e; --danger: #ff6767;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+  header h1 { margin:0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .config { padding: 12px 24px; background:#11141c; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .config input { flex:1; min-width:220px; padding:8px 10px; background:var(--card); border:1px solid var(--border); border-radius:6px; color:var(--text); }
+  .config button { padding:8px 14px; background:var(--accent); border:none; border-radius:6px; color:#fff; cursor:pointer; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px; max-width: 1100px; margin:0 auto; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card h2 { margin:0 0 10px; font-size: 15px; color: var(--accent); }
+  .card h3 { font-size: 12px; text-transform:uppercase; letter-spacing:.05em; color: var(--muted); margin: 12px 0 6px; }
+  .order { padding: 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; font-size: 13px; }
+  .order .status { display:inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background:#232838; color: var(--accent); }
+  .status.CANCELLED { color: var(--danger); }
+  .status.DELIVERED { color: var(--ok); }
+  input, select { width:100%; padding:8px; margin-bottom:8px; background:#11141c; border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; }
+  button { padding:8px 12px; background:var(--accent); border:none; border-radius:6px; color:#fff; cursor:pointer; font-size:13px; }
+  button.secondary { background: #2a2e3a; }
+  button.danger { background: var(--danger); }
+  #alerts, #chatLog { max-height: 220px; overflow-y: auto; font-size: 13px; }
+  .alert-item { padding:6px 8px; border-left: 3px solid var(--accent); margin-bottom:6px; background:#11141c; border-radius: 4px; }
+  .chat-msg { margin-bottom: 6px; }
+  .chat-msg .who { color: var(--accent); font-weight:600; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; background:#232838; color:var(--muted); }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📦 Order Tracking & Live Support System</h1>
+  <p>Lab Assignment 04 — REST, WebSockets (Socket.io), JSON-RPC 2.0, and SSE all in one app.</p>
+</header>
+
+<div class="config">
+  <input id="backendUrl" value="http://localhost:4000" placeholder="Backend URL, e.g. https://your-backend.onrender.com" />
+  <button onclick="connectBackend()">Connect</button>
+  <span id="connStatus" class="pill">not connected</span>
+</div>
+
+<main>
+
+  <!-- REST: Orders -->
+  <div class="card">
+    <h2>1️⃣ REST — Orders (<code>/api/v1/orders</code>)</h2>
+    <button onclick="loadOrders()">Refresh orders</button>
+    <div id="ordersList" style="margin-top:10px;"></div>
+
+    <h3>Create new order</h3>
+    <input id="newCustomer" placeholder="Customer name" />
+    <input id="newTotal" placeholder="Total (e.g. 49.99)" />
+    <button onclick="createOrder()">Create order (POST)</button>
+  </div>
+
+  <!-- SSE: Alerts -->
+  <div class="card">
+    <h2>2️⃣ Server-Sent Events — Live Alerts (<code>/events</code>)</h2>
+    <p style="color:var(--muted); font-size:12px;">One-way live feed. New orders, status changes, and cancellations all push an alert here automatically.</p>
+    <div id="alerts"></div>
+  </div>
+
+  <!-- JSON-RPC -->
+  <div class="card">
+    <h2>3️⃣ JSON-RPC 2.0 (<code>/rpc</code>)</h2>
+    <input id="rpcOrderId" placeholder="Order ID, e.g. order-1001" />
+    <div class="row">
+      <button class="danger" onclick="cancelOrderRpc()">cancelOrder</button>
+      <button class="secondary" onclick="getStatusRpc()">getOrderStatus</button>
+    </div>
+    <pre id="rpcResult" style="background:#11141c; padding:8px; border-radius:6px; font-size:12px; white-space:pre-wrap;"></pre>
+  </div>
+
+  <!-- WebSocket: tracking + chat -->
+  <div class="card">
+    <h2>4️⃣ WebSockets — Tracking &amp; Support Chat</h2>
+    <input id="wsOrderId" placeholder="Order ID to track / chat about" />
+    <div class="row">
+      <select id="role">
+        <option value="customer">I'm the customer</option>
+        <option value="support">I'm the support agent</option>
+      </select>
+      <input id="chatName" placeholder="Your name" />
+    </div>
+    <button onclick="joinTrackingAndChat()">Track order + Join chat</button>
+
+    <h3>Live status</h3>
+    <div id="liveStatus" class="pill">not tracking</div>
+
+    <h3>Support chat</h3>
+    <div id="chatLog"></div>
+    <div class="row" style="margin-top:8px;">
+      <input id="chatInput" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendChat()" />
+      <button onclick="sendChat()">Send</button>
+    </div>
+  </div>
+
+</main>
+
+<script>
+let BACKEND = document.getElementById('backendUrl').value;
+let socket = null;
+
+function connectBackend() {
+  BACKEND = document.getElementById('backendUrl').value.replace(/\/$/, '');
+  if (socket) socket.disconnect();
+  socket = io(BACKEND, { transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    document.getElementById('connStatus').textContent = 'connected ✅';
+  });
+  socket.on('disconnect', () => {
+    document.getElementById('connStatus').textContent = 'disconnected';
+  });
+  socket.on('order:statusUpdate', (order) => {
+    document.getElementById('liveStatus').textContent = `${order.id} → ${order.status}`;
+    loadOrders();
+  });
+  socket.on('order:new', () => loadOrders());
+  socket.on('chat:message', (msg) => {
+    const log = document.getElementById('chatLog');
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    div.innerHTML = `<span class="who">${msg.sender}:</span> ${msg.text}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  });
+  socket.on('chat:userJoined', (info) => {
+    const log = document.getElementById('chatLog');
+    const div = document.createElement('div');
+    div.style.color = 'var(--muted)';
+    div.style.fontSize = '12px';
+    div.textContent = `${info.name || info.role} joined the chat`;
+    log.appendChild(div);
+  });
+
+  loadOrders();
+  connectSSE();
+}
+
+// ---- REST ----
+async function loadOrders() {
+  try {
+    const res = await fetch(`${BACKEND}/api/v1/orders`);
+    const json = await res.json();
+    const list = document.getElementById('ordersList');
+    list.innerHTML = json.data.map(o => `
+      <div class="order">
+        <strong>${o.id}</strong> — ${o.customerName}<br/>
+        $${o.total} <span class="status ${o.status}">${o.status}</span>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('ordersList').textContent = 'Could not load orders — check backend URL.';
+  }
+}
+
+async function createOrder() {
+  const customerName = document.getElementById('newCustomer').value;
+  const total = parseFloat(document.getElementById('newTotal').value) || 0;
+  if (!customerName) return alert('Enter a customer name');
+  await fetch(`${BACKEND}/api/v1/orders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customerName, total, items: [] })
+  });
+  loadOrders();
+}
+
+// ---- SSE ----
+function connectSSE() {
+  const es = new EventSource(`${BACKEND}/events`);
+  es.addEventListener('connected', (e) => addAlert(JSON.parse(e.data).message));
+  es.addEventListener('alert', (e) => addAlert(JSON.parse(e.data).message));
+}
+function addAlert(message) {
+  const box = document.getElementById('alerts');
+  const div = document.createElement('div');
+  div.className = 'alert-item';
+  div.textContent = message;
+  box.prepend(div);
+}
+
+// ---- JSON-RPC ----
+async function rpcCall(method, params) {
+  const res = await fetch(`${BACKEND}/rpc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', method, params, id: Date.now() })
+  });
+  return res.json();
+}
+async function cancelOrderRpc() {
+  const orderId = document.getElementById('rpcOrderId').value;
+  const result = await rpcCall('cancelOrder', { orderId });
+  document.getElementById('rpcResult').textContent = JSON.stringify(result, null, 2);
+  loadOrders();
+}
+async function getStatusRpc() {
+  const orderId = document.getElementById('rpcOrderId').value;
+  const result = await rpcCall('getOrderStatus', { orderId });
+  document.getElementById('rpcResult').textContent = JSON.stringify(result, null, 2);
+}
+
+// ---- WebSocket tracking + chat ----
+function joinTrackingAndChat() {
+  const orderId = document.getElementById('wsOrderId').value;
+  const role = document.getElementById('role').value;
+  const name = document.getElementById('chatName').value || role;
+  if (!orderId || !socket) return alert('Connect to backend and enter an Order ID first');
+  socket.emit('order:track', { orderId });
+  socket.emit('chat:join', { orderId, role, name });
+  document.getElementById('liveStatus').textContent = `tracking ${orderId}...`;
+}
+function sendChat() {
+  const orderId = document.getElementById('wsOrderId').value;
+  const name = document.getElementById('chatName').value || 'me';
+  const text = document.getElementById('chatInput').value;
+  if (!text || !orderId || !socket) return;
+  socket.emit('chat:message', { orderId, sender: name, text });
+  document.getElementById('chatInput').value = '';
+}
+
+// auto-connect on load
+connectBackend();
+</script>
+</body>
+</html>
